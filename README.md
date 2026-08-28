@@ -1,39 +1,36 @@
-# ChatSpace Advanced v4
+# ChatSpace Advanced V5
 
-WhatsApp/Messenger-style real-time chat app designed for Render.
+A Render-ready WhatsApp/Messenger-style chat application.
 
-## Features
-- User registration/login with bcrypt + JWT
-- 1-to-1 chats and group chats
-- Profile photo upload
-- Image/file sharing
-- Delivery/read receipts
-- Message edit/delete
-- Typing and online presence
+## Included
+- Registration/login, JWT session, password hashing
+- One-to-one chats
+- Group creation, member management and group messages
+- Profile avatar upload and update
+- Image/file attachments with size limits
+- Delivery/read receipts and unread counts
+- Edit/delete own messages
+- Typing indicator and online/offline presence
 - Browser notifications
-- WebRTC voice/video calling with Socket.IO signaling
-- Admin panel: user management, role promotion, disable/enable accounts
-- PostgreSQL persistence
-- Responsive mobile UI
-- Socket.IO websocket + polling fallback
+- Voice/video WebRTC calls with Socket.IO signaling
+- Admin dashboard with user search, role change, disable/enable and stats
+- PostgreSQL schema migration compatible with the previous ChatSpace tables
+- Responsive mobile-first UI
 
 ## Render
-Build: `npm install`
-Start: `npm start`
-Root Directory: blank when these files are at the repository root.
+Build command: `npm install`
+Start command: `npm start`
+Root Directory: blank when project files are at repository root.
 
 Environment variables:
-- `DATABASE_URL` = Render PostgreSQL Internal Database URL
-- `JWT_SECRET` = long random secret
-- `NODE_ENV` = `production`
-- `MAX_FILE_MB` = optional, default 15
-- `ADMIN_USERNAME` = optional username to promote to admin at startup
+- `DATABASE_URL` Render PostgreSQL Internal Database URL
+- `JWT_SECRET` long random secret
+- `NODE_ENV=production`
+- `ADMIN_USERNAME` optional username to make admin
+- `MAX_FILE_MB` optional, default 20
 
-## Important file-storage note
-This version stores uploaded files on the web service filesystem. Render web-service filesystems are ephemeral, so for permanent production media storage replace the local upload adapter with S3/Cloudinary/etc. The database and chat data remain in PostgreSQL.
+## Media storage
+The default upload adapter stores files under `uploads/`. Render web services have ephemeral local disks, so production deployments that need permanent media should replace this adapter with S3-compatible storage or Cloudinary.
 
 ## Calling
-Voice/video uses browser WebRTC peer-to-peer media and Socket.IO for signaling. HTTPS is required in production for microphone/camera permissions. Users must allow camera/microphone access.
-
-## Existing database
-The startup migration uses `CREATE TABLE IF NOT EXISTS` and adds missing columns/indexes, so it can upgrade the previous ChatSpace database without deleting existing users/messages.
+WebRTC requires HTTPS and microphone/camera permission. The app uses a public STUN server for NAT discovery. For difficult networks, add a TURN server in `public/app.js` in the `iceServers` list.
