@@ -12,7 +12,12 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: false }
+  // Render supports WebSockets and Socket.IO will automatically fall back
+  // to HTTP long-polling if a proxy/network blocks WebSocket upgrades.
+  cors: { origin: true, credentials: true },
+  transports: ["websocket", "polling"],
+  pingInterval: 25000,
+  pingTimeout: 20000
 });
 
 const PORT = process.env.PORT || 10000;
@@ -122,7 +127,7 @@ app.post("/api/register", async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
-    res.json({ user: cleanUser(rows[0]) });
+    res.json({ user: cleanUser(rows[0]), socketToken: token });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Registration failed." });
@@ -146,7 +151,7 @@ app.post("/api/login", async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
-    res.json({ user: cleanUser(rows[0]) });
+    res.json({ user: cleanUser(rows[0]), socketToken: token });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Login failed." });
@@ -162,6 +167,12 @@ app.get("/api/me", auth, async (req, res) => {
   const rows = await db("SELECT id,username,display_name FROM users WHERE id=$1", [req.user.id]);
   if (!rows.length) return res.status(401).json({ error: "User not found." });
   res.json({ user: cleanUser(rows[0]) });
+});
+
+app.get("/api/socket-token", auth, (req, res) => {
+  // The token is returned only to the already authenticated browser so
+  // Socket.IO can authenticate reliably behind Render/proxy layers.
+  res.json({ socketToken: makeToken(req.user) });
 });
 
 app.get("/api/users", auth, async (req, res) => {
