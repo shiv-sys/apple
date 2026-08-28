@@ -84,7 +84,9 @@ async function initDb(){
  if(process.env.ADMIN_USERNAME){await db('UPDATE users SET role=\'admin\' WHERE username=$1',[String(process.env.ADMIN_USERNAME).trim().toLowerCase()]);}
 }
 
-function publicUser(u){return {id:u.id,username:u.username,displayName:u.display_name,avatarUrl:u.avatar_url||null,role:u.role||'user',isDisabled:!!u.is_disabled,lastSeen:u.last_seen||null};}
+function publicUser(u){return {id:u.id,username:u.username,displayName:u.display_name,avatarUrl:u.avatar_url||null,role:u.role||'user',isDisabled:!!u.is_disabled,lastSeen:u.last_seen||null,isOnline:isUserOnline(u.id)};}
+function isUserOnline(userId){const set=onlineSockets.get(Number(userId));return !!set&&set.size>0;}
+function broadcastPresence(userId,online){io.emit('presence',{userId:Number(userId),online:!!online,lastSeen:new Date().toISOString()});}
 function tokenFor(u){return jwt.sign({id:u.id,username:u.username,role:u.role||'user'},JWT_SECRET,{expiresIn:'7d'});}
 function getToken(req){return req.cookies.chat_token;}
 async function auth(req,res,next){try{const t=getToken(req);if(!t)throw new Error('no token');const p=jwt.verify(t,JWT_SECRET);const rows=await db('SELECT * FROM users WHERE id=$1',[p.id]);if(!rows[0])return res.status(401).json({error:'Not authenticated.'});if(rows[0].is_disabled)return res.status(403).json({error:'This account is disabled.'});req.user=rows[0];next();}catch(e){res.status(401).json({error:'Not authenticated.'});}}
@@ -127,15 +129,34 @@ app.patch('/api/admin/users/:id',auth,admin,async(req,res)=>{try{const id=Number
 // Socket authentication and realtime events
 io.use(async(socket,next)=>{try{const supplied=socket.handshake.auth?.token;const cookie=socket.handshake.headers.cookie||'';const match=cookie.match(/(?:^|;\s*)chat_token=([^;]+)/);const t=supplied||decodeURIComponent(match?.[1]||'');if(!t)return next(new Error('Authentication required'));const p=jwt.verify(t,JWT_SECRET);const u=(await db('SELECT * FROM users WHERE id=$1',[p.id]))[0];if(!u||u.is_disabled)return next(new Error('Account unavailable'));socket.user=publicUser(u);socket.userId=u.id;next();}catch(e){next(new Error('Authentication failed'));}});
 
-const online=new Map();
-function joinUserRooms(socket){socket.join('user:'+socket.userId);for(const [sid,s] of online){if(s.userId!==socket.userId)io.to('user:'+s.userId).emit('presence',{userId:socket.userId,online:true});}}
+const onlineSockets=new Map(); // userId -> Set(socket.id)
+function joinUserRooms(socket){
+ socket.join('user:'+socket.userId);
+ for(const [uid,set] of onlineSockets){
+   if(Number(uid)!==Number(socket.userId) && set.size) socket.emit('presence',{userId:Number(uid),online:true,lastSeen:new Date().toISOString()});
+ }
+}
 function messagePayload(m){return {...m,created_at:m.created_at,edited_at:m.edited_at||null,deleted_at:m.deleted_at||null};}
 async function createNotification(userId,type,title,body,data={}){const r=(await db('INSERT INTO notifications(user_id,type,title,body,data) VALUES($1,$2,$3,$4,$5) RETURNING *',[userId,type,title,body,JSON.stringify(data)]))[0];io.to('user:'+userId).emit('notification',r);return r;}
 
 io.on('connection',socket=>{
- online.set(socket.id,socket);joinUserRooms(socket);socket.broadcast.emit('presence',{userId:socket.userId,online:true});
- db('UPDATE users SET last_seen=NOW() WHERE id=$1',[socket.userId]).catch(()=>{});
- socket.on('presence:ping',()=>db('UPDATE users SET last_seen=NOW() WHERE id=$1',[socket.userId]).catch(()=>{}));
+ const uid=Number(socket.userId);
+ let connections=onlineSockets.get(uid);
+ const wasOnline=!!connections&&connections.size>0;
+ if(!connections){connections=new Set();onlineSockets.set(uid,connections);}
+ connections.add(socket.id);
+ joinUserRooms(socket);
+ db('UPDATE users SET last_seen=NOW() WHERE id=$1',[uid]).catch(()=>{});
+ if(!wasOnline) broadcastPresence(uid,true);
+ socket.on('presence:ping',()=>{
+   db('UPDATE users SET last_seen=NOW() WHERE id=$1',[uid]).catch(()=>{});
+   socket.emit('presence:ack',{userId:uid,at:new Date().toISOString()});
+ });
+ socket.on('presence:sync',()=>{
+   const userIds=[];
+   for(const [id,set] of onlineSockets) if(set.size) userIds.push(Number(id));
+   socket.emit('presence:snapshot',{userIds});
+ });
  socket.on('conversation:join',async p=>{try{if(p?.type==='group'){const gid=Number(p.id);const ok=(await db('SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2',[gid,socket.userId]))[0];if(ok)socket.join('group:'+gid);}else{const id=Number(p?.id);if(await directAllowed(socket.userId,id)){socket.join('user:'+id);socket.join('user:'+socket.userId);}}}catch(e){}});
  socket.on('typing',p=>{if(p?.type==='group')io.to('group:'+Number(p.id)).emit('typing',{from:socket.userId,name:socket.user.displayName,active:!!p.active});else io.to('user:'+Number(p.to)).emit('typing',{from:socket.userId,name:socket.user.displayName,active:!!p.active});});
  socket.on('message:send',async(p,ack)=>{try{const body=String(p?.body||'').trim();const att=p?.attachment||null;if(!body&&!att)throw new Error('Message is empty');let row;if(p.type==='group'){const gid=Number(p.id);const member=(await db('SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2',[gid,socket.userId]))[0];if(!member)throw new Error('Not a group member');row=(await db(`INSERT INTO messages(sender_id,group_id,body,attachment_url,attachment_name,attachment_type,attachment_size) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[socket.userId,gid,body||null,att?.url||null,att?.name||null,att?.type||null,att?.size||null]))[0];const members=await db('SELECT user_id FROM group_members WHERE group_id=$1 AND user_id<>$2',[gid,socket.userId]);const sender=socket.user.displayName;io.to('group:'+gid).emit('message:new',messagePayload({...row,sender_name:sender,sender_avatar:socket.user.avatarUrl,is_read:false}));for(const m of members){await createNotification(m.user_id,'message',`New message in ${p.name||'group'}`,body||att?.name||'Attachment',{type:'group',id:gid});}}else{const to=Number(p.to);if(!(await directAllowed(socket.userId,to)))throw new Error('Recipient unavailable');row=(await db(`INSERT INTO messages(sender_id,receiver_id,body,attachment_url,attachment_name,attachment_type,attachment_size) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[socket.userId,to,body||null,att?.url||null,att?.name||null,att?.type||null,att?.size||null]))[0];const full={...row,sender_name:socket.user.displayName,sender_avatar:socket.user.avatarUrl,is_read:false};io.to('user:'+to).emit('message:new',messagePayload(full));io.to('user:'+socket.userId).emit('message:new',messagePayload(full));await createNotification(to,'message',`Message from ${socket.user.displayName}`,body||att?.name||'Attachment',{type:'direct',id:socket.userId});}ack?.({ok:true,message:row});}catch(e){ack?.({ok:false,error:e.message||'Could not send message'});}});
@@ -155,7 +176,18 @@ io.on('connection',socket=>{
  socket.on('call:answer',p=>{const to=Number(p?.to);if(to)io.to('user:'+to).emit('call:answer',{from:socket.userId,answer:p.answer,callId:String(p.callId)});});
  socket.on('call:ice',p=>{const to=Number(p?.to);if(to)io.to('user:'+to).emit('call:ice',{from:socket.userId,candidate:p.candidate,callId:String(p.callId)});});
  socket.on('call:end',p=>{const to=Number(p?.to);if(to)io.to('user:'+to).emit('call:end',{from:socket.userId,callId:String(p.callId)});});
- socket.on('disconnect',()=>{online.delete(socket.id);db('UPDATE users SET last_seen=NOW() WHERE id=$1',[socket.userId]).catch(()=>{});setTimeout(()=>{const still=[...online.values()].some(s=>s.userId===socket.userId);if(!still)io.emit('presence',{userId:socket.userId,online:false});},500);});
+ socket.on('disconnect',()=>{
+ const current=onlineSockets.get(uid);
+ if(current) current.delete(socket.id);
+ db('UPDATE users SET last_seen=NOW() WHERE id=$1',[uid]).catch(()=>{});
+ setTimeout(()=>{
+   const latest=onlineSockets.get(uid);
+   if(!latest||latest.size===0){
+     onlineSockets.delete(uid);
+     broadcastPresence(uid,false);
+   }
+ },2500);
+ });
 });
 
 (async()=>{try{await initDb();server.listen(PORT,'0.0.0.0',()=>console.log(`ChatSpace V7 listening on ${PORT}`));}catch(e){console.error('Startup failed',e);process.exit(1);}})();
