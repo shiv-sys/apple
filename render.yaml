@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: render-chat-app
+    name: chatspace-advanced
     runtime: node
     buildCommand: npm install
     startCommand: npm start
@@ -11,3 +11,5 @@ services:
         sync: false
       - key: NODE_ENV
         value: production
+      - key: MAX_FILE_MB
+        value: "15"

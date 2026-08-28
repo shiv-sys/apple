@@ -1,49 +1,39 @@
-# ChatSpace — Render-ready real-time chat app
+# ChatSpace Advanced v4
 
-A simple real-time one-to-one chat application built with Node.js, Express, Socket.IO and PostgreSQL.
+WhatsApp/Messenger-style real-time chat app designed for Render.
 
-## Correct project structure
+## Features
+- User registration/login with bcrypt + JWT
+- 1-to-1 chats and group chats
+- Profile photo upload
+- Image/file sharing
+- Delivery/read receipts
+- Message edit/delete
+- Typing and online presence
+- Browser notifications
+- WebRTC voice/video calling with Socket.IO signaling
+- Admin panel: user management, role promotion, disable/enable accounts
+- PostgreSQL persistence
+- Responsive mobile UI
+- Socket.IO websocket + polling fallback
 
-```text
-render-chat-app/
-├── package.json
-├── server.js
-├── render.yaml
-├── .env.example
-├── .gitignore
-├── README.md
-└── public/
-    ├── index.html
-    ├── app.js
-    └── style.css
-```
+## Render
+Build: `npm install`
+Start: `npm start`
+Root Directory: blank when these files are at the repository root.
 
-**Important:** `package.json`, `server.js`, and `render.yaml` belong in the repository root. Only the browser files belong inside `public/`.
+Environment variables:
+- `DATABASE_URL` = Render PostgreSQL Internal Database URL
+- `JWT_SECRET` = long random secret
+- `NODE_ENV` = `production`
+- `MAX_FILE_MB` = optional, default 15
+- `ADMIN_USERNAME` = optional username to promote to admin at startup
 
-## Render deployment
+## Important file-storage note
+This version stores uploaded files on the web service filesystem. Render web-service filesystems are ephemeral, so for permanent production media storage replace the local upload adapter with S3/Cloudinary/etc. The database and chat data remain in PostgreSQL.
 
-1. Upload the contents of this folder to the root of a GitHub repository. Do not put the whole project inside another folder.
-2. In Render, create a PostgreSQL database.
-3. Create a Node Web Service from the GitHub repository.
-4. Leave **Root Directory** blank.
-5. Build command: `npm install`
-6. Start command: `npm start`
-7. Add environment variables:
-   - `DATABASE_URL` = Render PostgreSQL **Internal Database URL**
-   - `JWT_SECRET` = a long random secret you create
-   - `NODE_ENV` = `production`
-8. Deploy.
+## Calling
+Voice/video uses browser WebRTC peer-to-peer media and Socket.IO for signaling. HTTPS is required in production for microphone/camera permissions. Users must allow camera/microphone access.
 
-Render supplies `PORT` automatically; the server uses `process.env.PORT`.
-
-The application creates its PostgreSQL tables automatically on startup.
-
-## Local development
-
-```bash
-npm install
-cp .env.example .env
-npm start
-```
-
-Open `http://localhost:10000`.
+## Existing database
+The startup migration uses `CREATE TABLE IF NOT EXISTS` and adds missing columns/indexes, so it can upgrade the previous ChatSpace database without deleting existing users/messages.
