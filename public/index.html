@@ -1,86 +1,9 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ChatSpace</title>
-  <link rel="stylesheet" href="/style.css">
-</head>
-<body>
-  <div id="toast"></div>
-
-  <section id="authView" class="auth-shell">
-    <div class="auth-card">
-      <div class="brand big">ChatSpace</div>
-      <p class="muted">Simple, fast, real-time messaging.</p>
-
-      <div class="auth-tabs">
-        <button class="tab active" data-mode="login">Login</button>
-        <button class="tab" data-mode="register">Create account</button>
-      </div>
-
-      <form id="authForm">
-        <label>Username
-          <input id="username" required autocomplete="username" placeholder="your_username">
-        </label>
-
-        <label id="displayNameWrap" class="hidden">Display name
-          <input id="displayName" autocomplete="name" placeholder="Your name">
-        </label>
-
-        <label>Password
-          <input id="password" type="password" required minlength="6" autocomplete="current-password" placeholder="••••••••">
-        </label>
-
-        <button class="primary full" type="submit" id="authSubmit">Login</button>
-        <p id="authError" class="error"></p>
-      </form>
-    </div>
-  </section>
-
-  <section id="appView" class="app-shell hidden">
-    <aside class="sidebar">
-      <div class="side-head">
-        <div>
-          <div class="brand">ChatSpace</div>
-          <div id="myName" class="muted small"></div>
-        </div>
-        <button id="logoutBtn" class="icon-btn" title="Logout">↪</button>
-      </div>
-
-      <div class="search-wrap">
-        <input id="searchInput" placeholder="Search people...">
-      </div>
-
-      <div id="peopleList" class="people-list"></div>
-    </aside>
-
-    <main class="chat-panel">
-      <header class="chat-head">
-        <button id="backBtn" class="back-btn">‹</button>
-        <div id="chatAvatar" class="avatar">?</div>
-        <div class="chat-title">
-          <strong id="chatName">Select a person</strong>
-          <span id="chatStatus" class="muted small">Start a conversation</span>
-        </div>
-      </header>
-
-      <div id="messages" class="messages">
-        <div class="empty-state">
-          <div class="empty-icon">💬</div>
-          <h2>Your messages</h2>
-          <p>Choose someone from the left to start chatting.</p>
-        </div>
-      </div>
-
-      <form id="composer" class="composer hidden">
-        <input id="messageInput" maxlength="4000" autocomplete="off" placeholder="Write a message...">
-        <button class="send-btn" type="submit">Send</button>
-      </form>
-    </main>
-  </section>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js"></script>
-</body>
-</html>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChatSpace Advanced</title><link rel="stylesheet" href="/style.css"><script src="/socket.io/socket.io.js"></script></head><body>
+<section id="auth" class="auth"><div class="card"><div class="logo">💬 ChatSpace</div><p class="muted">Advanced real-time messaging</p><div class="tabs"><button id="loginTab" class="active">Login</button><button id="registerTab">Create account</button></div><form id="authForm"><label>Username<input id="username" required autocomplete="username"></label><label id="nameWrap" class="hidden">Display name<input id="displayName"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><button class="primary" id="authSubmit">Login</button><div id="authError" class="error"></div></form></div></section>
+<section id="app" class="app hidden"><aside class="sidebar"><header><div><b>Chats</b><small id="myStatus">Online</small></div><div class="head-actions"><button id="newGroup" title="New group">＋</button><button id="profileBtn" title="Profile">⚙</button><button id="adminBtn" class="hidden" title="Admin">🛡</button><button id="logoutBtn" title="Logout">↪</button></div></header><div class="search"><input id="search" placeholder="Search people"></div><div class="tabs smalltabs"><button id="peopleTab" class="active">People</button><button id="groupsTab">Groups</button></div><div id="chatList" class="list"></div></aside>
+<main class="chat"><header class="chathead"><button id="back" class="back">‹</button><div id="chatAvatar" class="avatar">?</div><div class="chatmeta"><b id="chatName">Select a chat</b><small id="chatStatus">Start a conversation</small></div><div class="callactions hidden" id="callActions"><button id="voiceCall">☎</button><button id="videoCall">▣</button></div></header><div id="messages" class="messages"><div class="welcome"><div>💬</div><h2>ChatSpace</h2><p>Select a person or group to start chatting.</p></div></div><div id="typing" class="typing"></div><form id="composer" class="composer hidden"><input type="file" id="fileInput" hidden><button type="button" id="attach">📎</button><input id="message" autocomplete="off" placeholder="Write a message..."><button class="send">➤</button></form></main>
+<div id="toast" class="toast"></div>
+</section>
+<div id="modal" class="modal hidden"><div class="modalbox"><button id="modalClose" class="x">×</button><div id="modalContent"></div></div></div>
+<div id="callModal" class="modal hidden"><div class="callbox"><div class="calltop"><b id="callTitle">Call</b><button id="endCall" class="danger">End</button></div><div class="videos"><video id="remoteVideo" autoplay playsinline></video><video id="localVideo" autoplay muted playsinline></video></div><div id="callState" class="muted">Connecting…</div></div></div>
+<script src="/app.js"></script></body></html>

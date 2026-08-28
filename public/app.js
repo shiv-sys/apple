@@ -1,237 +1,28 @@
-let me = null;
-let users = [];
-let activeUser = null;
-let socket = null;
-let socketToken = null;
-let authMode = "login";
-const onlineUsers = new Set();
-
-const $ = id => document.getElementById(id);
-
-function toast(text) {
-  const el = $("toast");
-  el.textContent = text;
-  el.className = "show";
-  setTimeout(() => el.className = "", 2200);
-}
-
-async function api(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: {"Content-Type":"application/json", ...(options.headers || {})}
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Request failed");
-  return data;
-}
-
-function initials(name) {
-  return name.split(/\s+/).map(x => x[0]).join("").slice(0,2).toUpperCase();
-}
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-  }[c]));
-}
-
-function setAuthMode(mode) {
-  authMode = mode;
-  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.mode === mode));
-  $("displayNameWrap").classList.toggle("hidden", mode !== "register");
-  $("authSubmit").textContent = mode === "register" ? "Create account" : "Login";
-  $("authError").textContent = "";
-}
-
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => setAuthMode(t.dataset.mode));
-
-$("authForm").onsubmit = async e => {
-  e.preventDefault();
-  $("authError").textContent = "";
-  try {
-    const endpoint = authMode === "register" ? "/api/register" : "/api/login";
-    const body = {
-      username: $("username").value,
-      password: $("password").value
-    };
-    if (authMode === "register") body.displayName = $("displayName").value;
-
-    const data = await api(endpoint, {method:"POST", body:JSON.stringify(body)});
-    me = data.user;
-    socketToken = data.socketToken;
-    showApp();
-  } catch (err) {
-    $("authError").textContent = err.message;
-  }
-};
-
-async function bootstrap() {
-  try {
-    const data = await api("/api/me");
-    me = data.user;
-    const tokenData = await api("/api/socket-token");
-    socketToken = tokenData.socketToken;
-    showApp();
-  } catch {
-    $("authView").classList.remove("hidden");
-  }
-}
-
-async function showApp() {
-  $("authView").classList.add("hidden");
-  $("appView").classList.remove("hidden");
-  $("myName").textContent = `Signed in as ${me.displayName}`;
-  connectSocket();
-  await loadPeople();
-}
-
-function connectSocket() {
-  if (socket) socket.disconnect();
-  socket = io({
-    auth: { token: socketToken },
-    withCredentials: true,
-    transports: ["websocket", "polling"],
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-    timeout: 10000
-  });
-
-  socket.on("connect", () => {
-    toast("Realtime connected");
-  });
-
-  socket.on("connect_error", err => {
-    console.error("Socket.IO connection error:", err);
-    toast("Realtime connection unavailable — retrying...");
-  });
-  socket.on("presence", ({userId, online}) => {
-    if (online) onlineUsers.add(userId);
-    else onlineUsers.delete(userId);
-    renderPeople();
-    if (activeUser && activeUser.id === userId) updateStatus();
-  });
-
-  socket.on("typing", ({userId, typing}) => {
-    if (activeUser?.id === userId) {
-      $("chatStatus").textContent = typing ? "typing..." : (onlineUsers.has(userId) ? "online" : "offline");
-    }
-  });
-
-  socket.on("new_message", msg => {
-    if (activeUser && (msg.sender_id === activeUser.id || msg.receiver_id === activeUser.id)) {
-      appendMessage(msg);
-      scrollMessages();
-    }
-    loadPeople();
-  });
-}
-
-async function loadPeople(q = "") {
-  try {
-    const data = await api("/api/users" + (q ? `?q=${encodeURIComponent(q)}` : ""));
-    users = data.users;
-    renderPeople();
-  } catch (e) {
-    toast(e.message);
-  }
-}
-
-function renderPeople() {
-  const list = $("peopleList");
-  if (!users.length) {
-    list.innerHTML = `<div class="empty-state" style="padding:35px 15px"><p>No people found.</p></div>`;
-    return;
-  }
-
-  list.innerHTML = users.map(u => `
-    <button class="person ${activeUser?.id === u.id ? "selected" : ""}" data-id="${u.id}">
-      <div class="avatar">${initials(u.displayName)}</div>
-      <div class="person-info">
-        <div class="person-name">${escapeHtml(u.displayName)}</div>
-        <div class="person-last">@${escapeHtml(u.username)}</div>
-      </div>
-      ${onlineUsers.has(u.id) ? '<span class="online-dot"></span>' : ''}
-    </button>
-  `).join("");
-
-  list.querySelectorAll(".person").forEach(btn => {
-    btn.onclick = () => openChat(Number(btn.dataset.id));
-  });
-}
-
-async function openChat(id) {
-  activeUser = users.find(u => u.id === id) || null;
-  if (!activeUser) return;
-
-  document.querySelector(".app-shell").classList.add("chat-open");
-  $("chatAvatar").textContent = initials(activeUser.displayName);
-  $("chatName").textContent = activeUser.displayName;
-  $("composer").classList.remove("hidden");
-  updateStatus();
-  renderPeople();
-
-  $("messages").innerHTML = "";
-  try {
-    const data = await api(`/api/messages/${id}`);
-    data.messages.forEach(appendMessage);
-    scrollMessages();
-  } catch (e) {
-    toast(e.message);
-  }
-}
-
-function updateStatus() {
-  $("chatStatus").textContent = activeUser && onlineUsers.has(activeUser.id) ? "online" : "offline";
-}
-
-function appendMessage(msg) {
-  const mine = msg.sender_id === me.id;
-  const row = document.createElement("div");
-  row.className = `bubble ${mine ? "mine" : "theirs"}`;
-  const date = new Date(msg.created_at);
-  row.innerHTML = `${escapeHtml(msg.body).replace(/\n/g,"<br>")}<span class="time">${date.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span>`;
-  $("messages").appendChild(row);
-}
-
-function scrollMessages() {
-  $("messages").scrollTop = $("messages").scrollHeight;
-}
-
-$("composer").onsubmit = e => {
-  e.preventDefault();
-  const input = $("messageInput");
-  const body = input.value.trim();
-  if (!body || !activeUser || !socket?.connected) return;
-
-  socket.emit("send_message", {receiverId: activeUser.id, body}, result => {
-    if (!result?.ok) toast(result?.error || "Message failed");
-  });
-  input.value = "";
-  input.focus();
-};
-
-let typingTimer;
-$("messageInput").addEventListener("input", () => {
-  if (!activeUser || !socket?.connected) return;
-  socket.emit("typing", {receiverId: activeUser.id, typing: true});
-  clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => {
-    socket.emit("typing", {receiverId: activeUser.id, typing: false});
-  }, 700);
-});
-
-$("searchInput").oninput = e => loadPeople(e.target.value.trim());
-
-$("backBtn").onclick = () => {
-  document.querySelector(".app-shell").classList.remove("chat-open");
-  activeUser = null;
-  $("composer").classList.add("hidden");
-};
-
-$("logoutBtn").onclick = async () => {
-  try { await api("/api/logout", {method:"POST"}); } catch {}
-  location.reload();
-};
-
-bootstrap();
+let me=null,token=null,socket=null,active=null,users=[],groups=[],mode='people',typingTimer=null,pc=null,localStream=null,currentCall=null;
+const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+async function api(url,opt={}){const r=await fetch(url,{credentials:'include',...opt});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.error||'Request failed');return d}
+function toast(t){const x=$('toast');x.textContent=t;x.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>x.classList.remove('show'),2600)}
+function avatar(u,cls='avatar'){return `<div class="${cls}">${u?.avatarUrl?`<img src="${esc(u.avatarUrl)}">`:esc((u?.displayName||u?.name||'?').slice(0,1).toUpperCase())}</div>`}
+function showAuth(){ $('auth').classList.remove('hidden');$('app').classList.add('hidden') }
+function showApp(){ $('auth').classList.add('hidden');$('app').classList.remove('hidden');$('myStatus').textContent=me.role==='admin'?'Admin · Online':'Online';$('adminBtn').classList.toggle('hidden',me.role!=='admin');connect();loadList();}
+let register=false;$('loginTab').onclick=()=>{register=false;$('loginTab').classList.add('active');$('registerTab').classList.remove('active');$('nameWrap').classList.add('hidden');$('authSubmit').textContent='Login'};$('registerTab').onclick=()=>{register=true;$('registerTab').classList.add('active');$('loginTab').classList.remove('active');$('nameWrap').classList.remove('hidden');$('authSubmit').textContent='Create account'};
+$('authForm').onsubmit=async e=>{e.preventDefault();$('authError').textContent='';try{const d=await api(register?'/api/register':'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,displayName:$('displayName').value,password:$('password').value})});me=d.user;token=d.socketToken;showApp()}catch(x){$('authError').textContent=x.message}};
+async function boot(){try{const d=await api('/api/me');me=d.user;token=(await api('/api/socket-token')).socketToken;showApp()}catch{showAuth()}}boot();
+function connect(){socket?.disconnect();socket=io({auth:{token},transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity,reconnectionDelay:1000,timeout:10000});socket.on('connect',()=>toast('Realtime connected'));socket.on('connect_error',()=>toast('Realtime connection unavailable — retrying...'));socket.on('presence',p=>{const el=document.querySelector(`[data-user="${p.userId}"] .dot`);if(el)el.style.display=p.online?'block':'none';if(active?.type==='direct'&&active.id===p.userId)$('chatStatus').textContent=p.online?'online':'offline'});socket.on('typing',p=>{if(active&&(active.type==='direct'?active.id===p.userId:active.id===p.groupId))$('typing').textContent=p.typing?`${active.type==='group'?'Someone':active.name} is typing…`:''});socket.on('new_message',m=>{if(active&&(active.type==='group'?String(m.group_id)===String(active.id):!m.group_id&&((m.sender_id===active.id)||(m.receiver_id===active.id)))){append(m);scroll();if(m.sender_id!==me.id)markRead(m)}loadList()});socket.on('message_updated',m=>{const el=document.querySelector(`[data-mid="${m.id}"]`);if(el){const text=el.querySelector('.body');if(text)text.innerHTML=esc(m.body).replace(/\n/g,'<br>')+' <i>(edited)</i>'}});socket.on('message_deleted',m=>{const el=document.querySelector(`[data-mid="${m.id}"]`);if(el)el.querySelector('.body').innerHTML='<i>This message was deleted</i>'});socket.on('message_read',p=>{const el=document.querySelector(`[data-mid="${p.messageId}"] .receipt`);if(el)el.textContent='✓✓'});socket.on('notification',n=>{toast(n.title);if('Notification'in window&&Notification.permission==='granted')new Notification(n.title,{body:n.body||''})});socket.on('call:offer',handleOffer);socket.on('call:answer',async p=>{await pc?.setRemoteDescription(p.answer);$('callState').textContent='Connected'});socket.on('call:ice',async p=>{try{await pc?.addIceCandidate(p.candidate)}catch{}});socket.on('call:end',()=>endCall(false));}
+$('peopleTab').onclick=()=>{mode='people';$('peopleTab').classList.add('active');$('groupsTab').classList.remove('active');loadList()};$('groupsTab').onclick=()=>{mode='groups';$('groupsTab').classList.add('active');$('peopleTab').classList.remove('active');loadList()};$('search').oninput=()=>loadList();
+async function loadList(){try{if(mode==='people'){const d=await api('/api/users?q='+encodeURIComponent($('search').value));users=d.users;$('chatList').innerHTML=users.map(u=>item(u,'direct')).join('')}else{const d=await api('/api/conversations');groups=d.groups;$('chatList').innerHTML=groups.map(g=>item(g,'group')).join('')}}catch(e){toast(e.message)}}
+function item(x,type){return `<button class="item ${active?.type===type&&String(active.id)===String(x.id)?'active':''}" data-user="${type==='direct'?x.id:''}" onclick='openChat(${JSON.stringify(type)},${JSON.stringify(x.id)})'>${avatar(x)}<span class="itemmain"><b>${esc(type==='group'?x.name:x.displayName)}</b><small>${esc(x.lastMessage||x.username||x.description||'')}</small></span>${type==='direct'?'<span class="dot" style="display:none"></span>':''}</button>`}
+window.openChat=async(type,id)=>{const x=type==='direct'?users.find(u=>u.id===id)||((await api('/api/users?q=')).users.find(u=>u.id===id)):groups.find(g=>String(g.id)===String(id));if(!x)return;active={type,id,name:type==='group'?x.name:x.displayName,avatarUrl:x.avatarUrl};$('app').classList.add('chat-open');$('chatAvatar').innerHTML=x.avatarUrl?`<img src="${esc(x.avatarUrl)}">`:esc((active.name||'?')[0].toUpperCase());$('chatName').textContent=active.name;$('chatStatus').textContent=type==='group'?'Group':'offline';$('composer').classList.remove('hidden');$('callActions').classList.toggle('hidden',type!=='direct');$('messages').innerHTML='';if(type==='group'){socket.emit('join_group',id);$('chatStatus').textContent='Group chat';const d=await api('/api/messages/group/'+id);d.messages.forEach(append)}else{const d=await api('/api/messages/direct/'+id);d.messages.forEach(append)}scroll()};
+function append(m){const mine=m.sender_id===me.id;const row=document.createElement('div');row.className='bubble '+(mine?'mine':'theirs');row.dataset.mid=m.id;let body=m.deleted_at?'<i>This message was deleted</i>':esc(m.body||'').replace(/\n/g,'<br>');if(m.attachment_url){body+=m.attachment_type?.startsWith('image/')?`<img src="${esc(m.attachment_url)}"><a href="${esc(m.attachment_url)}" target="_blank">${esc(m.attachment_name||'Image')}</a>`:`<a href="${esc(m.attachment_url)}" target="_blank">📎 ${esc(m.attachment_name||'Download file')}</a>`}row.innerHTML=(active?.type==='group'&&!mine?`<div class="sender">${esc(m.sender_name||'')}</div>`:'')+`<div class="body">${body}</div><div class="meta">${new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}${m.edited_at?' · edited':''} <span class="receipt">${mine?(m.is_read?'✓✓':'✓'):''}</span></div>${mine&&!m.deleted_at?`<div class="actions"><button onclick="editMessage('${m.id}')">✎</button><button onclick="deleteMessage('${m.id}')">🗑</button></div>`:''}`;$('messages').appendChild(row);if(!mine)markRead(m)}
+function scroll(){$('messages').scrollTop=$('messages').scrollHeight}async function markRead(m){try{await api('/api/messages/'+m.id+'/read',{method:'POST'})}catch{}}
+$('composer').onsubmit=async e=>{e.preventDefault();if(!active||!socket?.connected)return;const body=$('message').value.trim();const f=$('fileInput').files[0];if(!body&&!f)return;let attachment=null;if(f){try{const fd=new FormData();fd.append('file',f);attachment=await api('/api/upload',{method:'POST',body:fd})}catch(x){toast(x.message);return}}socket.emit('send_message',{receiverId:active.type==='direct'?active.id:null,groupId:active.type==='group'?active.id:null,body,attachment},r=>{if(!r?.ok)toast(r?.error||'Send failed')});$('message').value='';$('fileInput').value='';$('message').focus()};$('attach').onclick=()=>$('fileInput').click();$('message').oninput=()=>{if(!active||!socket?.connected)return;socket.emit('typing',{receiverId:active.type==='direct'?active.id:null,groupId:active.type==='group'?active.id:null,typing:true});clearTimeout(typingTimer);typingTimer=setTimeout(()=>socket.emit('typing',{receiverId:active.type==='direct'?active.id:null,groupId:active.type==='group'?active.id:null,typing:false}),700)};
+window.editMessage=async id=>{const el=document.querySelector(`[data-mid="${id}"] .body`);const old=el?.textContent||'';const body=prompt('Edit message',old);if(body===null)return;try{await api('/api/messages/'+id+'/edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body})})}catch(e){toast(e.message)}};window.deleteMessage=async id=>{if(!confirm('Delete this message?'))return;try{await api('/api/messages/'+id,{method:'DELETE'})}catch(e){toast(e.message)}};
+$('back').onclick=()=>{$('app').classList.remove('chat-open');active=null;$('composer').classList.add('hidden')};$('logoutBtn').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
+$('profileBtn').onclick=()=>{modal(`<h2>My profile</h2><form id="profileForm"><div class="row">${avatar(me)}<div class="grow"><input name="displayName" value="${esc(me.displayName)}" maxlength="80"></div></div><label>Profile photo<input type="file" name="avatar" accept="image/*"></label><button class="primary">Save profile</button></form>`);$('profileForm').onsubmit=async e=>{e.preventDefault();try{const d=await api('/api/profile',{method:'POST',body:new FormData(e.target)});me=d.user;closeModal();toast('Profile updated')}catch(x){toast(x.message)}}};
+$('newGroup').onclick=async()=>{try{const d=await api('/api/users?q=');modal(`<h2>Create group</h2><input id="gname" placeholder="Group name"><input id="gdesc" placeholder="Description"><div style="max-height:260px;overflow:auto">${d.users.map(u=>`<label class="check"><input type="checkbox" value="${u.id}"> ${esc(u.displayName)} (@${esc(u.username)})</label>`).join('')}</div><button id="createGroup" class="primary">Create group</button>`);$('createGroup').onclick=async()=>{const ids=[...document.querySelectorAll('#modalContent input[type=checkbox]:checked')].map(x=>Number(x.value));try{await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('gname').value,description:$('gdesc').value,memberIds:ids})});closeModal();mode='groups';$('groupsTab').click()}catch(x){toast(x.message)}}}catch(e){toast(e.message)}};
+function modal(html){$('modalContent').innerHTML=html;$('modal').classList.remove('hidden')}function closeModal(){$('modal').classList.add('hidden');$('modalContent').innerHTML=''}$('modalClose').onclick=closeModal;$('modal').onclick=e=>{if(e.target===$('modal'))closeModal()};
+$('adminBtn').onclick=async()=>{try{const [s,u]=await Promise.all([api('/api/admin/stats'),api('/api/admin/users')]);modal(`<h2>Admin panel</h2><p>Users: <b>${s.users}</b> · Messages: <b>${s.messages}</b> · Groups: <b>${s.groups}</b></p><div>${u.users.map(x=>`<div class="adminrow"><span>${avatar(x)} <b>${esc(x.displayName)}</b><small> @${esc(x.username)}</small></span><span><select data-role="${x.id}"><option ${x.role==='user'?'selected':''}>user</option><option ${x.role==='admin'?'selected':''}>admin</option></select> <button data-disable="${x.id}">${x.isDisabled?'Enable':'Disable'}</button></span></div>`).join('')}</div>`);document.querySelectorAll('[data-role]').forEach(s=>s.onchange=()=>adminUpdate(s.dataset.role,s.value,null));document.querySelectorAll('[data-disable]').forEach(b=>b.onclick=()=>adminUpdate(b.dataset.disable,null,b.textContent==='Disable'))}catch(e){toast(e.message)}};async function adminUpdate(id,role,disabled){try{await api('/api/admin/users/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({role,isDisabled:disabled})});toast('Admin change saved')}catch(e){toast(e.message)}}
+async function requestNotifications(){if('Notification'in window&&Notification.permission==='default')await Notification.requestPermission()}requestNotifications();
+async function startCall(kind){if(!active||active.type!=='direct')return;await requestNotifications();try{localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:kind==='video'});pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.ontrack=e=>{$('remoteVideo').srcObject=e.streams[0]};pc.onicecandidate=e=>{if(e.candidate)socket.emit('call:ice',{to:active.id,candidate:e.candidate})};const offer=await pc.createOffer();await pc.setLocalDescription(offer);currentCall={to:active.id};$('callTitle').textContent=kind==='video'?'Video call':'Voice call';$('callState').textContent='Calling…';$('localVideo').srcObject=localStream;$('remoteVideo').srcObject=null;$('callModal').classList.remove('hidden');socket.emit('call:offer',{to:active.id,offer,callType:kind})}catch(e){toast('Camera/microphone permission is required.')}}$('voiceCall').onclick=()=>startCall('voice');$('videoCall').onclick=()=>startCall('video');
+async function handleOffer(p){if(!active||active.type!=='direct'){if('Notification'in window&&Notification.permission==='granted')new Notification('Incoming call',{body:p.fromName||'Incoming call'});if(!confirm(`Incoming ${p.callType} call from ${p.fromName}. Answer?`)){socket.emit('call:end',{to:p.from});return}active={type:'direct',id:p.from,name:p.fromName};}$('callTitle').textContent=p.callType==='video'?'Video call':'Voice call';$('callState').textContent='Connecting…';$('callModal').classList.remove('hidden');try{localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:p.callType==='video'});pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));pc.ontrack=e=>$('remoteVideo').srcObject=e.streams[0];pc.onicecandidate=e=>{if(e.candidate)socket.emit('call:ice',{to:p.from,candidate:e.candidate})};await pc.setRemoteDescription(p.offer);const ans=await pc.createAnswer();await pc.setLocalDescription(ans);socket.emit('call:answer',{to:p.from,answer:ans});$('localVideo').srcObject=localStream;$('callState').textContent='Connected'}catch(e){toast('Could not answer call');endCall(false)}}
+function endCall(signal=true){if(signal&&currentCall)socket.emit('call:end',{to:currentCall.to});pc?.close();pc=null;localStream?.getTracks().forEach(t=>t.stop());localStream=null;currentCall=null;$('callModal').classList.add('hidden');$('localVideo').srcObject=null;$('remoteVideo').srcObject=null}$('endCall').onclick=()=>endCall(true);
