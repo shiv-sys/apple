@@ -7,5 +7,26 @@
 <main id="chat" class="chat"><div id="emptyChat" class="empty-chat"><div>💬</div><h2>Your messages</h2><p>Select a conversation to start chatting.</p></div><div id="chatView" class="chat-view hidden"><header class="chat-head"><button id="backBtn" class="back">‹</button><div id="chatAvatar"></div><div class="chat-title"><b id="chatName">Chat</b><small id="chatStatus"> </small></div><div class="call-actions"><button id="voiceCall" title="Voice call">☎</button><button id="videoCall" title="Video call">▣</button><button id="groupInfo" title="Conversation info">ⓘ</button></div></header><div id="typing" class="typing"></div><div id="messages" class="messages"></div><form id="composer" class="composer"><input type="file" id="fileInput" hidden><button type="button" id="attachBtn" class="icon-btn" title="Attach">📎</button><input id="messageInput" autocomplete="off" placeholder="Write a message…"><button class="send-btn" type="submit">➤</button></form></div></main>
 </section>
 <div id="modal" class="modal hidden"><div id="modalBox" class="modal-box"><button id="modalClose" class="modal-close">×</button><div id="modalContent"></div></div></div>
-<div id="callModal" class="modal hidden"><div class="call-box"><div class="call-top"><div><b id="callTitle">Call</b><small id="callState">Connecting…</small></div><button id="endCall" class="end-call">End</button></div><div class="videos"><video id="remoteVideo" autoplay playsinline></video><video id="localVideo" autoplay muted playsinline></video></div></div></div>
+<div id="callModal" class="modal hidden">
+  <div class="call-box">
+    <div class="call-top">
+      <div class="call-person"><div id="callAvatar" class="avatar mini">?</div><div><b id="callTitle">Call</b><small id="callState">Connecting…</small></div></div>
+      <button id="endCall" class="end-call">End</button>
+    </div>
+    <div id="incomingCallActions" class="incoming-actions hidden">
+      <button id="rejectCall" class="reject-call">✕ Reject</button>
+      <button id="acceptCall" class="accept-call">✓ Accept</button>
+    </div>
+    <div id="callActions" class="call-controls hidden">
+      <button id="muteCall" title="Mute microphone">🎙️</button>
+      <button id="cameraCall" title="Turn camera off">📷</button>
+      <button id="speakerCall" title="Toggle speaker">🔊</button>
+    </div>
+    <div class="videos">
+      <div id="callPlaceholder" class="call-placeholder"><div class="call-icon">☎</div><b id="callPlaceholderText">Calling…</b><small>Waiting for answer</small></div>
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+  </div>
+</div>
 <script src="/app.js"></script></body></html>
