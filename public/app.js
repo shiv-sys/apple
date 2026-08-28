@@ -2,6 +2,7 @@ let me = null;
 let users = [];
 let activeUser = null;
 let socket = null;
+let socketToken = null;
 let authMode = "login";
 const onlineUsers = new Set();
 
@@ -57,6 +58,7 @@ $("authForm").onsubmit = async e => {
 
     const data = await api(endpoint, {method:"POST", body:JSON.stringify(body)});
     me = data.user;
+    socketToken = data.socketToken;
     showApp();
   } catch (err) {
     $("authError").textContent = err.message;
@@ -67,6 +69,8 @@ async function bootstrap() {
   try {
     const data = await api("/api/me");
     me = data.user;
+    const tokenData = await api("/api/socket-token");
+    socketToken = tokenData.socketToken;
     showApp();
   } catch {
     $("authView").classList.remove("hidden");
@@ -82,11 +86,25 @@ async function showApp() {
 }
 
 function connectSocket() {
+  if (socket) socket.disconnect();
   socket = io({
-    withCredentials: true
+    auth: { token: socketToken },
+    withCredentials: true,
+    transports: ["websocket", "polling"],
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    timeout: 10000
   });
 
-  socket.on("connect_error", () => toast("Realtime connection unavailable"));
+  socket.on("connect", () => {
+    toast("Realtime connected");
+  });
+
+  socket.on("connect_error", err => {
+    console.error("Socket.IO connection error:", err);
+    toast("Realtime connection unavailable — retrying...");
+  });
   socket.on("presence", ({userId, online}) => {
     if (online) onlineUsers.add(userId);
     else onlineUsers.delete(userId);
