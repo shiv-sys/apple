@@ -34,3 +34,9 @@ The default upload adapter stores files under `uploads/`. Render web services ha
 
 ## Calling
 WebRTC requires HTTPS and microphone/camera permission. The app uses a public STUN server for NAT discovery. For difficult networks, add a TURN server in `public/app.js` in the `iceServers` list.
+
+
+## Voice/video calling
+Calls use WebRTC for media and Socket.IO for signaling. The caller rings first; the recipient must explicitly **Accept** or **Reject**. Microphone/camera permissions are requested only after the call is accepted. The UI also supports mute, camera toggle, speaker toggle, call timeout, busy/rejected states, and ICE candidate queuing.
+
+For networks where STUN is insufficient, configure a TURN server by exposing these frontend values in your deployment (for example by templating them into `public/index.html`): `CHATSPACE_TURN_URL`, `CHATSPACE_TURN_USERNAME`, and `CHATSPACE_TURN_CREDENTIAL`. For production, use a reputable TURN provider and keep credentials protected.
