@@ -2,14 +2,13 @@ require('dotenv').config();
 const express=require('express');
 const http=require('http');
 const path=require('path');
-const fs=require('fs');
-const crypto=require('crypto');
 const bcrypt=require('bcryptjs');
 const jwt=require('jsonwebtoken');
 const cookieParser=require('cookie-parser');
 const multer=require('multer');
 const {Pool}=require('pg');
 const {Server}=require('socket.io');
+const {v2:cloudinary}=require('cloudinary');
 
 const app=express();
 const server=http.createServer(app);
@@ -17,16 +16,15 @@ const io=new Server(server,{transports:['websocket','polling'],pingInterval:2000
 const PORT=Number(process.env.PORT)||10000;
 const JWT_SECRET=process.env.JWT_SECRET||'dev-only-change-this-secret';
 const MAX_FILE_MB=Math.max(1,Math.min(100,Number(process.env.MAX_FILE_MB)||20));
-const uploadDir=process.env.UPLOAD_DIR||path.join(__dirname,'uploads');
-fs.mkdirSync(uploadDir,{recursive:true});
-const pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false});
+const dbUrl=process.env.DATABASE_URL;
+const pool=new Pool({connectionString:dbUrl,ssl:process.env.NODE_ENV==='production'?{rejectUnauthorized:false}:false,connectionTimeoutMillis:10000,idleTimeoutMillis:30000,max:10});
 const db=(sql,params=[])=>pool.query(sql,params).then(r=>r.rows);
 
 app.use(express.json({limit:'2mb'}));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname,'public')));
-app.use('/uploads',express.static(uploadDir,{maxAge:'1d'}));
-app.get('/health',(req,res)=>res.json({ok:true,service:'chatspace-advanced-v5',time:new Date().toISOString()}));
+app.get('/health',(req,res)=>res.json({ok:true,service:'chatspace-advanced-v5',databaseConfigured:!!process.env.DATABASE_URL,cloudinaryConfigured:cloudinaryReady(),time:new Date().toISOString()}));
+app.get('/health/db',async(req,res)=>{try{if(!process.env.DATABASE_URL)return res.status(503).json({ok:false,error:'DATABASE_URL is not configured.'});await db('SELECT 1');res.json({ok:true,database:'connected'});}catch(e){console.error('Database health check failed:',e);res.status(503).json({ok:false,error:'Database connection failed.',code:e.code||null});}});
 
 async function initDb(){
  if(!process.env.DATABASE_URL){console.warn('DATABASE_URL missing; app will not work with persistence.');return;}
@@ -92,17 +90,45 @@ function getToken(req){return req.cookies.chat_token;}
 async function auth(req,res,next){try{const t=getToken(req);if(!t)throw new Error('no token');const p=jwt.verify(t,JWT_SECRET);const rows=await db('SELECT * FROM users WHERE id=$1',[p.id]);if(!rows[0])return res.status(401).json({error:'Not authenticated.'});if(rows[0].is_disabled)return res.status(403).json({error:'This account is disabled.'});req.user=rows[0];next();}catch(e){res.status(401).json({error:'Not authenticated.'});}}
 function admin(req,res,next){if(req.user?.role!=='admin')return res.status(403).json({error:'Admin access required.'});next();}
 function setAuth(res,t){res.cookie('chat_token',t,{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:7*86400000});}
-function safeName(s){return String(s||'file').replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,120)||'file';}
-const storage=multer.diskStorage({destination:uploadDir,filename:(req,file,cb)=>cb(null,Date.now()+'-'+crypto.randomBytes(7).toString('hex')+'-'+safeName(file.originalname))});
-const upload=multer({storage,limits:{fileSize:MAX_FILE_MB*1024*1024}});
+cloudinary.config({
+ cloud_name:process.env.CLOUDINARY_CLOUD_NAME,
+ api_key:process.env.CLOUDINARY_API_KEY,
+ api_secret:process.env.CLOUDINARY_API_SECRET,
+ secure:true
+});
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_FILE_MB*1024*1024}});
+function cloudinaryReady(){return !!(process.env.CLOUDINARY_CLOUD_NAME&&process.env.CLOUDINARY_API_KEY&&process.env.CLOUDINARY_API_SECRET);}
+function uploadToCloudinary(file,folder){return new Promise((resolve,reject)=>{if(!cloudinaryReady())return reject(new Error('Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.'));const stream=cloudinary.uploader.upload_stream({folder,resource_type:'auto',use_filename:true,unique_filename:true,overwrite:false},(error,result)=>error?reject(error):resolve(result));stream.end(file.buffer);});}
 
-app.post('/api/register',async(req,res)=>{try{const username=String(req.body.username||'').trim().toLowerCase(),displayName=String(req.body.displayName||'').trim(),password=String(req.body.password||'');if(!/^[a-z0-9_]{3,40}$/.test(username))return res.status(400).json({error:'Username must be 3-40 characters: letters, numbers and _. '});if(displayName.length<2||displayName.length>80)return res.status(400).json({error:'Display name must be 2-80 characters.'});if(password.length<6)return res.status(400).json({error:'Password must be at least 6 characters.'});if((await db('SELECT id FROM users WHERE username=$1',[username])).length)return res.status(409).json({error:'Username already exists.'});const role=process.env.ADMIN_USERNAME?.trim().toLowerCase()===username?'admin':'user';const hash=await bcrypt.hash(password,12);const u=(await db('INSERT INTO users(username,display_name,password_hash,role,last_seen) VALUES($1,$2,$3,$4,NOW()) RETURNING *',[username,displayName,hash,role]))[0];const t=tokenFor(u);setAuth(res,t);res.json({user:publicUser(u),socketToken:t});}catch(e){console.error(e);res.status(500).json({error:'Registration failed.'});}});
+app.post('/api/register',async(req,res)=>{try{
+ const username=String(req.body?.username||'').trim().toLowerCase();
+ const displayName=String(req.body?.displayName||'').trim();
+ const password=String(req.body?.password||'');
+ if(!/^[a-z0-9_]{3,40}$/.test(username))return res.status(400).json({error:'Username must be 3-40 characters and use only letters, numbers, or _.'});
+ if(displayName.length<2||displayName.length>80)return res.status(400).json({error:'Display name must be 2-80 characters.'});
+ if(password.length<6)return res.status(400).json({error:'Password must be at least 6 characters.'});
+ if(!process.env.DATABASE_URL)return res.status(503).json({error:'Database is not configured. Add DATABASE_URL to Render Environment Variables.'});
+ const existing=await db('SELECT id FROM users WHERE username=$1',[username]);
+ if(existing.length)return res.status(409).json({error:'Username already exists.'});
+ const role=process.env.ADMIN_USERNAME?.trim().toLowerCase()===username?'admin':'user';
+ const hash=await bcrypt.hash(password,12);
+ const u=(await db('INSERT INTO users(username,display_name,password_hash,role,last_seen) VALUES($1,$2,$3,$4,NOW()) RETURNING *',[username,displayName,hash,role]))[0];
+ const t=tokenFor(u);setAuth(res,t);res.status(201).json({user:publicUser(u),socketToken:t});
+ }catch(e){
+  console.error('Registration failed:',{message:e.message,code:e.code,detail:e.detail,table:e.table,column:e.column,constraint:e.constraint});
+  if(e.code==='23505')return res.status(409).json({error:'Username already exists.'});
+  if(['ECONNREFUSED','ENOTFOUND','ETIMEDOUT','57P01','08001','08006'].includes(e.code))return res.status(503).json({error:'Cannot connect to PostgreSQL. Check DATABASE_URL and make sure the database service is running.'});
+  if(e.code==='42P01')return res.status(500).json({error:'Database tables are missing. Redeploy this build so the automatic database setup can run.'});
+  if(e.code==='42703'||e.code==='23502')return res.status(500).json({error:'Database schema is incompatible with this build. Redeploy this patched version.'});
+  const msg=process.env.NODE_ENV==='production'?'Registration failed. Check the Render service logs for the database error.':(e.message||'Registration failed.');
+  res.status(500).json({error:msg});
+ }});
 app.post('/api/login',async(req,res)=>{try{const username=String(req.body.username||'').trim().toLowerCase(),password=String(req.body.password||'');const u=(await db('SELECT * FROM users WHERE username=$1',[username]))[0];if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Invalid username or password.'});if(u.is_disabled)return res.status(403).json({error:'This account is disabled.'});await db('UPDATE users SET last_seen=NOW() WHERE id=$1',[u.id]);u.last_seen=new Date();const t=tokenFor(u);setAuth(res,t);res.json({user:publicUser(u),socketToken:t});}catch(e){console.error(e);res.status(500).json({error:'Login failed.'});}});
 app.post('/api/logout',(req,res)=>{res.clearCookie('chat_token');res.json({ok:true});});
 app.get('/api/me',auth,(req,res)=>res.json({user:publicUser(req.user)}));
 app.get('/api/socket-token',auth,(req,res)=>res.json({socketToken:tokenFor(req.user)}));
 app.get('/api/users',auth,async(req,res)=>{try{const q=String(req.query.q||'').trim();const rows=await db(q?`SELECT * FROM users WHERE id<>$1 AND is_disabled=false AND (username ILIKE $2 OR display_name ILIKE $2) ORDER BY display_name LIMIT 100`:`SELECT * FROM users WHERE id<>$1 AND is_disabled=false ORDER BY display_name LIMIT 100`,q?[req.user.id,'%'+q+'%']:[req.user.id]);res.json({users:rows.map(publicUser)});}catch(e){res.status(500).json({error:'Could not load users.'});}});
-app.post('/api/profile',auth,upload.single('avatar'),async(req,res)=>{try{const name=String(req.body.displayName||req.user.display_name).trim();if(name.length<2||name.length>80)return res.status(400).json({error:'Display name must be 2-80 characters.'});let avatar=req.user.avatar_url;if(req.file)avatar='/uploads/'+req.file.filename;const u=(await db('UPDATE users SET display_name=$1,avatar_url=$2 WHERE id=$3 RETURNING *',[name,avatar,req.user.id]))[0];res.json({user:publicUser(u)});}catch(e){console.error(e);res.status(500).json({error:'Profile update failed.'});}});
+app.post('/api/profile',auth,upload.single('avatar'),async(req,res)=>{try{const name=String(req.body.displayName||req.user.display_name).trim();if(name.length<2||name.length>80)return res.status(400).json({error:'Display name must be 2-80 characters.'});let avatar=req.user.avatar_url;if(req.file){if(!(req.file.mimetype||'').startsWith('image/'))return res.status(400).json({error:'Profile photo must be an image.'});const result=await uploadToCloudinary(req.file,'chatspace/profiles');avatar=result.secure_url;}const u=(await db('UPDATE users SET display_name=$1,avatar_url=$2 WHERE id=$3 RETURNING *',[name,avatar,req.user.id]))[0];res.json({user:publicUser(u)});}catch(e){console.error('Profile upload failed:',e);res.status(500).json({error:e.message||'Profile update failed.'});}});
 
 async function directAllowed(a,b){const r=await db('SELECT id FROM users WHERE id=$1 AND is_disabled=false',[b]);return !!r[0];}
 app.get('/api/conversations',auth,async(req,res)=>{try{const direct=await db(`SELECT u.*,x.last_body,x.last_attachment,x.last_at FROM users u LEFT JOIN LATERAL(SELECT body last_body,attachment_name last_attachment,created_at last_at FROM messages m WHERE m.group_id IS NULL AND ((m.sender_id=$1 AND m.receiver_id=u.id) OR (m.sender_id=u.id AND m.receiver_id=$1)) ORDER BY m.created_at DESC LIMIT 1)x ON true WHERE u.id<>$1 AND u.is_disabled=false ORDER BY x.last_at DESC NULLS LAST,u.display_name`,[req.user.id]);const groups=await db(`SELECT g.*,x.last_body,x.last_attachment,x.last_at FROM groups g JOIN group_members gm ON gm.group_id=g.id AND gm.user_id=$1 LEFT JOIN LATERAL(SELECT body last_body,attachment_name last_attachment,created_at last_at FROM messages m WHERE m.group_id=g.id ORDER BY m.created_at DESC LIMIT 1)x ON true ORDER BY x.last_at DESC NULLS LAST,g.name`,[req.user.id]);res.json({conversations:direct.map(x=>({...publicUser(x),type:'direct',lastMessage:x.last_body||x.last_attachment||'',lastAt:x.last_at})),groups:groups.map(x=>({id:x.id,type:'group',name:x.name,description:x.description,avatarUrl:x.avatar_url,lastMessage:x.last_body||x.last_attachment||'',lastAt:x.last_at}))});}catch(e){console.error(e);res.status(500).json({error:'Could not load conversations.'});}});
@@ -114,7 +140,7 @@ app.get('/api/messages/group/:groupId',auth,async(req,res)=>{try{const gid=Numbe
 app.post('/api/groups/:id/members',auth,async(req,res)=>{try{const gid=Number(req.params.id),uid=Number(req.body.userId);const me=(await db('SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2',[gid,req.user.id]))[0];if(!me||!['owner','admin'].includes(me.role))return res.status(403).json({error:'Group admin access required.'});await db('INSERT INTO group_members(group_id,user_id,role) VALUES($1,$2,\'member\') ON CONFLICT DO NOTHING',[gid,uid]);res.json({ok:true});}catch(e){res.status(500).json({error:'Could not add member.'});}});
 app.delete('/api/groups/:id/members/:userId',auth,async(req,res)=>{try{const gid=Number(req.params.id),uid=Number(req.params.userId);const me=(await db('SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2',[gid,req.user.id]))[0];if(!me||!['owner','admin'].includes(me.role))return res.status(403).json({error:'Group admin access required.'});if(uid===req.user.id)return res.status(400).json({error:'Use leave group for yourself.'});await db('DELETE FROM group_members WHERE group_id=$1 AND user_id=$2',[gid,uid]);res.json({ok:true});}catch(e){res.status(500).json({error:'Could not remove member.'});}});
 
-app.post('/api/upload',auth,upload.single('file'),async(req,res)=>{if(!req.file)return res.status(400).json({error:'No file selected.'});const isImage=(req.file.mimetype||'').startsWith('image/');res.json({url:'/uploads/'+req.file.filename,name:req.file.originalname,type:req.file.mimetype,size:req.file.size,isImage});});
+app.post('/api/upload',auth,upload.single('file'),async(req,res)=>{try{if(!req.file)return res.status(400).json({error:'No file selected.'});const result=await uploadToCloudinary(req.file,'chatspace/attachments');const isImage=(req.file.mimetype||'').startsWith('image/');res.json({url:result.secure_url,name:req.file.originalname,type:req.file.mimetype,size:req.file.size,isImage,cloudinaryPublicId:result.public_id,resourceType:result.resource_type});}catch(e){console.error('Attachment upload failed:',e);res.status(500).json({error:e.message||'File upload failed.'});}});
 
 app.patch('/api/messages/:id',auth,async(req,res)=>{try{const id=Number(req.params.id),body=String(req.body.body||'').trim();if(!body)return res.status(400).json({error:'Message cannot be empty.'});const m=(await db('SELECT * FROM messages WHERE id=$1 AND sender_id=$2 AND deleted_at IS NULL',[id,req.user.id]))[0];if(!m)return res.status(404).json({error:'Message not found.'});const row=(await db('UPDATE messages SET body=$1,edited_at=NOW() WHERE id=$2 RETURNING *',[body,id]))[0];const room=m.group_id?'group:'+m.group_id:'user:'+m.receiver_id;io.to(room).emit('message:edited',{messageId:id,body,editedAt:row.edited_at});if(!m.group_id)io.to('user:'+m.sender_id).emit('message:edited',{messageId:id,body,editedAt:row.edited_at});res.json({message:row});}catch(e){res.status(500).json({error:'Could not edit message.'});}});
 app.delete('/api/messages/:id',auth,async(req,res)=>{try{const id=Number(req.params.id);const m=(await db('SELECT * FROM messages WHERE id=$1 AND sender_id=$2',[id,req.user.id]))[0];if(!m)return res.status(404).json({error:'Message not found.'});await db('UPDATE messages SET body=NULL,attachment_url=NULL,attachment_name=NULL,attachment_type=NULL,attachment_size=NULL,deleted_at=NOW() WHERE id=$1',[id]);const payload={messageId:id,deletedAt:new Date().toISOString()};if(m.group_id)io.to('group:'+m.group_id).emit('message:deleted',payload);else{io.to('user:'+m.receiver_id).emit('message:deleted',payload);io.to('user:'+m.sender_id).emit('message:deleted',payload);}res.json({ok:true});}catch(e){res.status(500).json({error:'Could not delete message.'});}});

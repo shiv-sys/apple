@@ -28,9 +28,18 @@ Environment variables:
 - `NODE_ENV=production`
 - `ADMIN_USERNAME` optional username to make admin
 - `MAX_FILE_MB` optional, default 20
+- `CLOUDINARY_CLOUD_NAME` Cloudinary cloud name
+- `CLOUDINARY_API_KEY` Cloudinary API key
+- `CLOUDINARY_API_SECRET` Cloudinary API secret (server-side only)
 
 ## Media storage
-The default upload adapter stores files under `uploads/`. Render web services have ephemeral local disks, so production deployments that need permanent media should replace this adapter with S3-compatible storage or Cloudinary.
+Uploads are stored in Cloudinary instead of the local `uploads/` directory, so profile photos and chat attachments persist across Render deployments and restarts.
+
+Cloudinary folders used by the app:
+- `chatspace/profiles` for profile photos
+- `chatspace/attachments` for chat files and images
+
+Set the three Cloudinary environment variables before deploying. The API secret is never exposed to the browser.
 
 ## Calling
 WebRTC requires HTTPS and microphone/camera permission. The app uses a public STUN server for NAT discovery. For difficult networks, add a TURN server in `public/app.js` in the `iceServers` list.
@@ -40,3 +49,15 @@ WebRTC requires HTTPS and microphone/camera permission. The app uses a public ST
 Calls use WebRTC for media and Socket.IO for signaling. The caller rings first; the recipient must explicitly **Accept** or **Reject**. Microphone/camera permissions are requested only after the call is accepted. The UI also supports mute, camera toggle, speaker toggle, call timeout, busy/rejected states, and ICE candidate queuing.
 
 For networks where STUN is insufficient, configure a TURN server by exposing these frontend values in your deployment (for example by templating them into `public/index.html`): `CHATSPACE_TURN_URL`, `CHATSPACE_TURN_USERNAME`, and `CHATSPACE_TURN_CREDENTIAL`. For production, use a reputable TURN provider and keep credentials protected.
+
+
+## Registration / database troubleshooting
+
+Registration requires PostgreSQL. On Render, set `DATABASE_URL` in the service Environment Variables to the connection string of your PostgreSQL database. After deployment, open `/health/db`; it should return `{"ok":true,"database":"connected"}`. The `/health` endpoint also reports whether Cloudinary and the database are configured (without exposing secrets).
+
+Cloudinary variables required for media uploads:
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+
+The API secret is server-only and must never be placed in frontend files.
